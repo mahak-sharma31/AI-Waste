@@ -1,0 +1,6 @@
+{
+  "name": "EcoVision AI",
+  "description": "Smart AI Waste Classification, EcoDecision Disposal Rules, Live Camera Scanner, Impact Analytics, and EcoChallenge Quiz.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
