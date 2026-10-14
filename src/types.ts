@@ -5,7 +5,8 @@ export type WasteCategory =
   | 'organic'
   | 'glass'
   | 'e-waste'
-  | 'hazardous';
+  | 'hazardous'
+  | 'unknown';
 
 export interface EcoDecisionInfo {
   title: string;
@@ -31,6 +32,8 @@ export interface UpcycleIdea {
 
 export interface AnalysisResult {
   id: string;
+  isIdentifiable: boolean;
+  unclearReason?: string;
   itemName: string;
   category: WasteCategory;
   categoryLabel: string;

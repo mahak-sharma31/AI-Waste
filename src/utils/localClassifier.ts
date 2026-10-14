@@ -19,8 +19,7 @@ interface PixelMetrics {
 
 export async function analyzeImageLocally(
   imageElement: HTMLImageElement,
-  previewUrl: string,
-  fileNameHint = ''
+  previewUrl: string
 ): Promise<AnalysisResult> {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
@@ -48,14 +47,13 @@ export async function analyzeImageLocally(
       ctx.drawImage(imageElement, 0, 0, 100, 100);
       const imgData = ctx.getImageData(0, 0, 100, 100).data;
 
-      // Sample focal area (center 60% of pixels: x 20-80, y 20-80) to focus on the object
       let sumR = 0;
       let sumG = 0;
       let sumB = 0;
       let focalCount = 0;
 
-      for (let y = 20; y < 80; y++) {
-        for (let x = 20; x < 80; x++) {
+      for (let y = 15; y < 85; y++) {
+        for (let x = 15; x < 85; x++) {
           const idx = (y * 100 + x) * 4;
           const r = imgData[idx];
           const g = imgData[idx + 1];
@@ -70,8 +68,7 @@ export async function analyzeImageLocally(
           const min = Math.min(r, g, b);
           const sat = max === 0 ? 0 : (max - min) / max;
 
-          // 1. Yellow Banana Peel / Citrus / Melon detector:
-          // In RGB: High Red and High Green, distinctly lower Blue
+          // 1. Yellow Organic (Banana Peel / Citrus):
           const isYellow =
             r >= 115 &&
             g >= 100 &&
@@ -79,13 +76,13 @@ export async function analyzeImageLocally(
             b <= 135 &&
             Math.abs(r - g) <= 65;
 
-          // 2. Green produce/vegetables:
+          // 2. Green Organic (Produce, Vegetables, Leaves):
           const isGreen =
             g >= 60 &&
             g >= r - 15 &&
             g >= b + 20;
 
-          // 3. Orange / Red fruit/vegetable peel (orange, carrot, apple, tomato):
+          // 3. Orange / Red Organic (Carrot, Tomato, Fruit Peel):
           const isOrangeRed =
             r >= 140 &&
             g >= 40 &&
@@ -93,7 +90,7 @@ export async function analyzeImageLocally(
             b <= 85 &&
             r > g + 25;
 
-          // 4. Brown spots on ripe banana peel, potato skin, coffee grounds:
+          // 4. Brown spots (Ripe banana freckles, compost, coffee):
           const isBrown =
             r >= 65 &&
             r <= 170 &&
@@ -103,7 +100,7 @@ export async function analyzeImageLocally(
             r > g &&
             g > b;
 
-          // 5. Corrugated cardboard (kraft brown with low saturation):
+          // 5. Corrugated Kraft Cardboard:
           const isCardboard =
             r >= 140 &&
             r <= 220 &&
@@ -114,13 +111,13 @@ export async function analyzeImageLocally(
             sat < 0.42 &&
             !isYellow;
 
-          // 6. Metal cans (grey, low saturation, shiny):
+          // 6. Metal Cans / Foil:
           const isMetal =
             Math.abs(r - g) < 18 &&
             Math.abs(g - b) < 18 &&
             sat < 0.18;
 
-          // 7. Synthetic blue/cyan plastics:
+          // 7. Synthetic Blue/Cyan Plastic:
           const isSynthetic =
             b > r + 35 || (b > 135 && g > 135 && r < 100);
 
@@ -134,7 +131,7 @@ export async function analyzeImageLocally(
         }
       }
 
-      metrics.totalPixels = focalCount;
+      metrics.totalPixels = Math.max(1, focalCount);
       metrics.avgR = sumR / focalCount;
       metrics.avgG = sumG / focalCount;
       metrics.avgB = sumB / focalCount;
@@ -143,17 +140,9 @@ export async function analyzeImageLocally(
       const minC = Math.min(metrics.avgR, metrics.avgG, metrics.avgB);
       metrics.avgSaturation = maxC === 0 ? 0 : (maxC - minC) / maxC;
     } catch {
-      // Cross-origin image fallback
+      // Cross-origin fallback
     }
   }
-
-  const lowerHint = fileNameHint.toLowerCase();
-  let category: WasteCategory = 'organic';
-  let itemName = 'Organic Food Waste';
-  let materialDetail = 'Compostable Plant Biomass';
-  let decompositionTime = '2-4 weeks';
-  let co2DivertedKg = 0.22;
-  let confidence = 92;
 
   const yellowRatio = metrics.yellowPixels / metrics.totalPixels;
   const greenRatio = metrics.greenOrganicPixels / metrics.totalPixels;
@@ -163,150 +152,76 @@ export async function analyzeImageLocally(
   const cardboardRatio = metrics.cardboardPixels / metrics.totalPixels;
   const metalRatio = metrics.metalPixels / metrics.totalPixels;
 
-  // First priority: filename hints if explicit
-  if (
-    lowerHint.includes('banana') ||
-    lowerHint.includes('peel') ||
-    lowerHint.includes('fruit') ||
-    lowerHint.includes('food') ||
-    lowerHint.includes('apple') ||
-    lowerHint.includes('organic') ||
-    lowerHint.includes('vegetable')
-  ) {
+  let isIdentifiable = true;
+  let unclearReason = '';
+  let category: WasteCategory = 'unknown';
+  let itemName = 'Unidentified Item';
+  let materialDetail = 'Material could not be confirmed reliably';
+  let decompositionTime = 'Variable';
+  let co2DivertedKg = 0.05;
+  let confidence = 50;
+
+  if (yellowRatio > 0.10 || (yellowRatio > 0.05 && brownRatio > 0.06)) {
+    // Yellow Banana Peel or Citrus Fruit Scrap
     category = 'organic';
-    itemName = lowerHint.includes('banana') ? 'Banana Peel (Organic Waste)' : 'Fruit & Vegetable Food Waste';
-    materialDetail = 'Compostable Plant Biomass (Nutrient-Rich Organic)';
+    itemName = 'Banana Peel / Yellow Fruit Biomass';
+    materialDetail = 'Compostable Fruit Peel (Biodegradable Organic Biomass)';
     decompositionTime = '2 to 4 weeks';
     co2DivertedKg = 0.24;
-    confidence = 96;
-  } else if (
-    lowerHint.includes('can') ||
-    lowerHint.includes('tin') ||
-    lowerHint.includes('metal') ||
-    lowerHint.includes('aluminium') ||
-    lowerHint.includes('aluminum')
-  ) {
-    category = 'metal';
-    itemName = 'Aluminium Beverage Can';
-    materialDetail = 'Aluminium Alloy (Infinitely Recyclable)';
-    decompositionTime = '200 years';
-    co2DivertedKg = 0.17;
-    confidence = 95;
-  } else if (
-    lowerHint.includes('box') ||
-    lowerHint.includes('cardboard') ||
-    lowerHint.includes('paper')
-  ) {
-    category = 'paper';
-    itemName = 'Corrugated Cardboard Box';
-    materialDetail = 'Unbleached Kraft Fibreboard';
-    decompositionTime = '2 months';
-    co2DivertedKg = 0.12;
-    confidence = 94;
-  } else if (
-    lowerHint.includes('glass') ||
-    lowerHint.includes('jar')
-  ) {
-    category = 'glass';
-    itemName = 'Glass Container / Jar';
-    materialDetail = 'Flint Container Glass';
-    decompositionTime = '1,000,000 years';
-    co2DivertedKg = 0.15;
-    confidence = 93;
-  } else if (
-    lowerHint.includes('bottle') ||
-    lowerHint.includes('plastic')
-  ) {
-    category = 'plastic';
-    itemName = 'Rigid Plastic Bottle';
-    materialDetail = '#1 PET (Polyethylene Terephthalate)';
-    decompositionTime = '450 years';
-    co2DivertedKg = 0.08;
-    confidence = 93;
-  }
-  // Visual feature classification:
-  else if (yellowRatio > 0.12 || (yellowRatio > 0.06 && brownRatio > 0.08)) {
-    // YELLOW DOMINANT: BANANA PEEL, CITRUS, LEMON, OR CORN
+    confidence = 88;
+  } else if (greenRatio > 0.12) {
     category = 'organic';
-    itemName = 'Banana Peel / Yellow Fruit Scrap';
-    materialDetail = 'Compostable Fruit Peeling (High Potassium Organic Biomass)';
-    decompositionTime = '2 to 4 weeks';
-    co2DivertedKg = 0.24;
-    confidence = 93;
-  } else if (greenRatio > 0.15) {
-    // GREEN VEGETABLES / LEAFY ORGANIC
-    category = 'organic';
-    itemName = 'Vegetable & Plant Organic Waste';
+    itemName = 'Vegetable & Plant Organic Scrap';
     materialDetail = 'Fresh Produce Biomass (Compostable)';
     decompositionTime = '2 to 4 weeks';
     co2DivertedKg = 0.22;
-    confidence = 92;
-  } else if (orangeRedRatio > 0.15) {
-    // ORANGE / RED PRODUCE (ORANGE PEEL, APPLE, TOMATO)
+    confidence = 86;
+  } else if (orangeRedRatio > 0.12) {
     category = 'organic';
-    itemName = 'Citrus / Fruit Food Waste';
-    materialDetail = 'Compostable Fruit Peel & Food Waste';
+    itemName = 'Fruit Peel / Food Waste';
+    materialDetail = 'Compostable Produce Biomass';
     decompositionTime = '3 to 6 weeks';
     co2DivertedKg = 0.21;
-    confidence = 91;
-  } else if (brownRatio > 0.22 && totalOrganicRatio > 0.3) {
-    // BROWN ORGANIC: COFFEE GROUNDS, RIPE PEELINGS, BREAD
-    category = 'organic';
-    itemName = 'Organic Food Waste / Scraps';
-    materialDetail = 'Compostable Kitchen Food Biomass';
-    decompositionTime = '2 to 4 weeks';
-    co2DivertedKg = 0.23;
-    confidence = 90;
-  } else if (cardboardRatio > 0.25) {
-    // KRAFT CARDBOARD
+    confidence = 85;
+  } else if (cardboardRatio > 0.22) {
     category = 'paper';
     itemName = 'Corrugated Cardboard / Kraft Paper';
-    materialDetail = 'Dry Paper Fibre Packaging';
+    materialDetail = 'Dry Cellulose Fibreboard';
     decompositionTime = '2 months';
     co2DivertedKg = 0.12;
-    confidence = 91;
-  } else if (metalRatio > 0.35 && metrics.avgBrightness > 110) {
-    // METAL CANS
+    confidence = 86;
+  } else if (metalRatio > 0.35 && metrics.avgBrightness > 100) {
     category = 'metal';
-    itemName = 'Aluminium Beverage Can / Tin';
-    materialDetail = 'Aluminium / Steel Alloy';
+    itemName = 'Aluminium Beverage Can / Metal Tin';
+    materialDetail = 'Aluminium / Steel Metal Alloy';
     decompositionTime = '200 years';
     co2DivertedKg = 0.17;
-    confidence = 92;
-  } else if (metrics.syntheticPlasticPixels > metrics.totalPixels * 0.18) {
-    // SYNTHETIC PLASTIC
+    confidence = 84;
+  } else if (metrics.syntheticPlasticPixels > metrics.totalPixels * 0.16) {
     category = 'plastic';
     itemName = 'Rigid Plastic Packaging';
-    materialDetail = '#1 PET or #2 HDPE Container';
+    materialDetail = '#1 PET or #2 HDPE Rigid Plastic';
     decompositionTime = '450 years';
     co2DivertedKg = 0.08;
-    confidence = 91;
-  } else if (totalOrganicRatio > 0.18) {
-    // MIXED ORGANIC FOOD RESIDUE
+    confidence = 82;
+  } else if (totalOrganicRatio > 0.15) {
     category = 'organic';
-    itemName = 'Mixed Food Waste / Produce Scrap';
-    materialDetail = 'Compostable Kitchen Organic Scrap';
+    itemName = 'Mixed Food Scrap / Organic Matter';
+    materialDetail = 'Compostable Kitchen Food Waste';
     decompositionTime = '2 to 4 weeks';
     co2DivertedKg = 0.22;
-    confidence = 89;
+    confidence = 80;
   } else {
-    // Fallback: Check overall color warmth
-    if (metrics.avgR > metrics.avgB + 40 && metrics.avgG > metrics.avgB + 20) {
-      // Warm yellow/amber/brown tone -> Organic / Peel
-      category = 'organic';
-      itemName = 'Fruit Peel / Food Waste';
-      materialDetail = 'Organic Compostable Biomass';
-      decompositionTime = '2 to 4 weeks';
-      co2DivertedKg = 0.22;
-      confidence = 88;
-    } else {
-      category = 'plastic';
-      itemName = 'Plastic Container / Packaging';
-      materialDetail = '#1 PET / #5 PP Rigid Plastic';
-      decompositionTime = '450 years';
-      co2DivertedKg = 0.08;
-      confidence = 85;
-    }
+    // Do NOT invent a fake plastic classification when features are unclear
+    isIdentifiable = false;
+    category = 'unknown';
+    itemName = 'Unidentified Waste Object';
+    unclearReason =
+      'Visual features could not reliably identify this item offline. Please check your internet connection to use the full Gemini AI vision analysis, or ensure good lighting and clear framing.';
+    materialDetail = 'Unidentified Composition';
+    decompositionTime = 'Unknown';
+    co2DivertedKg = 0;
+    confidence = 35;
   }
 
   const categoryLabels: Record<WasteCategory, string> = {
@@ -317,24 +232,25 @@ export async function analyzeImageLocally(
     glass: 'Glass Waste',
     'e-waste': 'Electronic Waste',
     hazardous: 'Hazardous Waste',
+    unknown: 'Unidentified Material',
   };
 
-  const alternatives = [
-    { className: categoryLabels[category], probability: confidence / 100 },
-    {
-      className: category === 'organic' ? 'General Waste' : 'Organic Waste',
-      probability: Math.round(((100 - confidence) * 0.65) / 100 * 100) / 100,
-    },
-    {
-      className: category === 'paper' ? 'Cardboard' : 'Paper',
-      probability: Math.round(((100 - confidence) * 0.35) / 100 * 100) / 100,
-    },
-  ];
+  const alternatives = isIdentifiable
+    ? [
+        { className: categoryLabels[category], probability: confidence / 100 },
+        {
+          className: category === 'organic' ? 'General Food Scrap' : 'Organic Matter',
+          probability: Math.round(((100 - confidence) * 0.65) / 100 * 100) / 100,
+        },
+      ]
+    : [];
 
-  const ecoDecision = ecoDecisionKnowledgeBase[category];
+  const ecoDecision = ecoDecisionKnowledgeBase[category] || ecoDecisionKnowledgeBase.unknown;
 
   return {
-    id: `scan-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+    id: `scan-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+    isIdentifiable,
+    unclearReason,
     itemName,
     category,
     categoryLabel: categoryLabels[category],
@@ -342,19 +258,28 @@ export async function analyzeImageLocally(
     confidence,
     lowConfidence: confidence < LOW_CONFIDENCE_THRESHOLD,
     alternatives,
-    cleanlinessStatus: category === 'organic' ? 'Organic Compost Biomass' : 'Clean for sorting',
+    cleanlinessStatus: isIdentifiable
+      ? category === 'organic'
+        ? 'Organic Compost Biomass'
+        : 'Clean for sorting'
+      : 'Unclear',
     decompositionTime,
     co2DivertedKg,
     ecoDecision,
-    upcycleIdea: {
-      title: category === 'organic' ? 'Natural Banana Peel Fertilizer Tea' : `DIY Upcycle for ${itemName}`,
-      description:
-        category === 'organic'
-          ? 'Soak banana peel in a jar of water for 48 hours to create potassium-rich liquid plant food, or bury directly in rose and tomato soil.'
-          : 'Clean thoroughly and repurpose as an organizer or seed starter to prevent landfill disposal.',
-      difficulty: 'Easy',
-      estTime: '10 mins',
-    },
+    upcycleIdea: isIdentifiable
+      ? {
+          title:
+            category === 'organic'
+              ? 'Natural Banana Peel Fertilizer Tea'
+              : `Upcycling Idea for ${itemName}`,
+          description:
+            category === 'organic'
+              ? 'Soak fruit peels in water for 48 hours to make potassium-rich garden fertilizer, or bury directly in compost.'
+              : 'Clean and repurpose as an organizer or planter to divert from landfill.',
+          difficulty: 'Easy',
+          estTime: '10 mins',
+        }
+      : undefined,
     previewUrl,
     timestamp: Date.now(),
     timeFormatted: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),

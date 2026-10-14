@@ -28,6 +28,7 @@ export const Analytics: React.FC<AnalyticsProps> = ({ history, onClearHistory, o
     glass: 0,
     'e-waste': 0,
     hazardous: 0,
+    unknown: 0,
   };
 
   let totalCo2Avoided = 0;
@@ -61,6 +62,7 @@ export const Analytics: React.FC<AnalyticsProps> = ({ history, onClearHistory, o
     glass: 'Glass Bottles',
     'e-waste': 'Electronic Waste',
     hazardous: 'Hazardous Waste',
+    unknown: 'Unidentified Material',
   };
 
   // Export CSV

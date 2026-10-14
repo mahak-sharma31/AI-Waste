@@ -10,9 +10,27 @@ export const CATEGORY_COLORS: Record<WasteCategory, { bg: string; text: string; 
   glass: { bg: 'bg-cyan-50', text: 'text-cyan-800', border: 'border-cyan-200', bar: 'bg-cyan-600' },
   'e-waste': { bg: 'bg-purple-50', text: 'text-purple-800', border: 'border-purple-200', bar: 'bg-purple-600' },
   hazardous: { bg: 'bg-rose-50', text: 'text-rose-800', border: 'border-rose-200', bar: 'bg-rose-600' },
+  unknown: { bg: 'bg-zinc-100', text: 'text-zinc-800', border: 'border-zinc-300', bar: 'bg-zinc-500' },
 };
 
 export const ecoDecisionKnowledgeBase: Record<WasteCategory, EcoDecisionInfo> = {
+  unknown: {
+    title: 'Unidentified Material',
+    disposal: [
+      'Material could not be confirmed reliably from the image.',
+      'Check the physical item for stamped resin codes (1-7) or paper/metal symbols before sorting.',
+      'When unsure, follow your municipal guide to avoid contaminating clean recycling streams.'
+    ],
+    preparation: [
+      'Examine the product packaging for manufacturer material markings.',
+      'Ensure item is emptied and free of liquid.'
+    ],
+    reuse: [
+      'Repurpose sturdy containers around the house or workshop if safe.'
+    ],
+    recycling: 'Contamination from unidentified mixed materials reduces secondary material market value.',
+    safety: 'Never heat unknown plastics or puncture unknown canisters.'
+  },
   plastic: {
     title: 'Plastic Waste',
     disposal: [

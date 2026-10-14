@@ -38,6 +38,7 @@ export const Scanner: React.FC<ScannerProps> = ({
   const [results, setResults] = useState<AnalysisResult[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [toastError, setToastError] = useState<string | null>(null);
+  const [apiKeyMissingError, setApiKeyMissingError] = useState<string | null>(null);
   const [upcycleModalData, setUpcycleModalData] = useState<{
     item: string;
     ideas: UpcycleIdea[];
@@ -260,25 +261,24 @@ export const Scanner: React.FC<ScannerProps> = ({
     }
   };
 
-  // Fast single image analyzer with strict 5-second timeout
+  // Robust single image analyzer with 15-second serverless timeout
   const analyzeSingleItem = async (
     file: File | undefined,
     previewUrl: string,
     idx: number
   ): Promise<AnalysisResult> => {
     let analyzedResult: AnalysisResult | null = null;
-    const fileName = file ? file.name : 'waste-sample';
     let optimizedBase64 = '';
 
     try {
-      // 1. Fast client-side image compression (40KB instead of 6MB)
+      // 1. Fast client-side image compression (640px JPEG) to ensure fast payload transport
       const optimized = await optimizeImageFast(file || previewUrl);
       optimizedBase64 = optimized.base64;
 
       if (optimized.base64) {
-        // 2. Strict 5-second AbortController timeout so scanning NEVER takes minutes
+        // 2. 15-second AbortController timeout so serverless cold starts and Gemini inference never get aborted prematurely
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
 
         try {
           const apiResponse = await fetch('/api/analyze-waste', {
@@ -294,61 +294,141 @@ export const Scanner: React.FC<ScannerProps> = ({
 
           if (apiResponse.ok) {
             const json = await apiResponse.json();
+
+            if (json.requiresApiKey) {
+              setApiKeyMissingError(
+                json.error ||
+                  'GEMINI_API_KEY is not configured in your hosting environment variables. Please add it to your Netlify / hosting dashboard.'
+              );
+            }
+
             if (json.success && json.data) {
               const d = json.data;
-              const rawCat = String(d.category || '').toLowerCase();
+              const isIdentifiable = d.is_identifiable !== false;
+              const rawCat = String(d.category || 'unknown').toLowerCase();
               let categoryKey: WasteCategory = 'organic';
 
-              if (rawCat.includes('organ') || rawCat.includes('food') || rawCat.includes('compost') || rawCat.includes('peel') || rawCat.includes('fruit') || rawCat.includes('vegetable') || rawCat.includes('banana')) {
+              if (!isIdentifiable || rawCat.includes('unknown') || rawCat.includes('unidentified')) {
+                categoryKey = 'unknown';
+              } else if (
+                rawCat.includes('organ') ||
+                rawCat.includes('food') ||
+                rawCat.includes('compost') ||
+                rawCat.includes('peel') ||
+                rawCat.includes('fruit') ||
+                rawCat.includes('vegetable') ||
+                rawCat.includes('banana')
+              ) {
                 categoryKey = 'organic';
-              } else if (rawCat.includes('metal') || rawCat.includes('can') || rawCat.includes('tin') || rawCat.includes('alumin')) {
+              } else if (
+                rawCat.includes('metal') ||
+                rawCat.includes('can') ||
+                rawCat.includes('tin') ||
+                rawCat.includes('alumin')
+              ) {
                 categoryKey = 'metal';
-              } else if (rawCat.includes('paper') || rawCat.includes('cardboard') || rawCat.includes('box') || rawCat.includes('kraft')) {
+              } else if (
+                rawCat.includes('paper') ||
+                rawCat.includes('cardboard') ||
+                rawCat.includes('box') ||
+                rawCat.includes('kraft')
+              ) {
                 categoryKey = 'paper';
               } else if (rawCat.includes('glass') || rawCat.includes('jar')) {
                 categoryKey = 'glass';
-              } else if (rawCat.includes('electr') || rawCat.includes('e-waste') || rawCat.includes('batt')) {
+              } else if (
+                rawCat.includes('electr') ||
+                rawCat.includes('e-waste') ||
+                rawCat.includes('batt')
+              ) {
                 categoryKey = 'e-waste';
               } else if (rawCat.includes('hazard')) {
                 categoryKey = 'hazardous';
-              } else if (rawCat.includes('plastic') || rawCat.includes('pet') || rawCat.includes('poly') || rawCat.includes('bottle')) {
+              } else if (
+                rawCat.includes('plastic') ||
+                rawCat.includes('pet') ||
+                rawCat.includes('poly') ||
+                rawCat.includes('bottle')
+              ) {
                 categoryKey = 'plastic';
               }
 
+              const categoryLabels: Record<WasteCategory, string> = {
+                plastic: 'Plastic Waste',
+                paper: 'Paper & Cardboard',
+                metal: 'Metal Waste',
+                organic: 'Organic Waste',
+                glass: 'Glass Waste',
+                'e-waste': 'Electronic Waste',
+                hazardous: 'Hazardous Waste',
+                unknown: 'Unidentified Material',
+              };
+
               analyzedResult = {
                 id: `scan-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 4)}`,
-                itemName: d.item_name || 'Scanned Waste Item',
+                isIdentifiable,
+                unclearReason: d.unclear_reason,
+                itemName: d.item_name || (isIdentifiable ? 'Scanned Waste Item' : 'Unidentified Waste Item'),
                 category: categoryKey,
-                categoryLabel: d.category_label || (categoryKey.charAt(0).toUpperCase() + categoryKey.slice(1) + ' Waste'),
-                materialDetail: d.material_detail || 'Standard recyclable material',
-                confidence: Math.min(99, Math.max(1, Math.round(d.confidence || 94))),
-                lowConfidence: (d.confidence || 94) < LOW_CONFIDENCE_THRESHOLD,
+                categoryLabel:
+                  d.category_label || categoryLabels[categoryKey],
+                materialDetail:
+                  d.material_detail ||
+                  (isIdentifiable ? 'Standard recyclable material' : 'Material could not be confirmed reliably'),
+                confidence: Math.min(99, Math.max(1, Math.round(d.confidence || (isIdentifiable ? 94 : 35)))),
+                lowConfidence: !isIdentifiable || (d.confidence || 94) < LOW_CONFIDENCE_THRESHOLD,
                 alternatives: Array.isArray(d.alternatives) ? d.alternatives : [],
-                cleanlinessStatus: d.cleanliness_status || (categoryKey === 'organic' ? 'Compostable Organic' : 'Clean for sorting'),
-                decompositionTime: d.decomposition_time || (categoryKey === 'organic' ? '2-4 weeks' : '50-100 years'),
-                co2DivertedKg: Number(d.co2_diverted_kg || (categoryKey === 'organic' ? 0.24 : 0.1)),
-                ecoDecision: d.eco_decision || ecoDecisionKnowledgeBase[categoryKey],
+                cleanlinessStatus:
+                  d.cleanliness_status ||
+                  (categoryKey === 'organic'
+                    ? 'Compostable Organic'
+                    : isIdentifiable
+                    ? 'Clean for sorting'
+                    : 'Unclear'),
+                decompositionTime:
+                  d.decomposition_time ||
+                  (categoryKey === 'organic'
+                    ? '2-4 weeks'
+                    : categoryKey === 'plastic'
+                    ? '450 years'
+                    : isIdentifiable
+                    ? '50-100 years'
+                    : 'Unknown'),
+                co2DivertedKg: Number(
+                  d.co2_diverted_kg ||
+                    (categoryKey === 'organic' ? 0.24 : isIdentifiable ? 0.1 : 0)
+                ),
+                ecoDecision:
+                  d.eco_decision ||
+                  ecoDecisionKnowledgeBase[categoryKey] ||
+                  ecoDecisionKnowledgeBase.unknown,
                 upcycleIdea: d.upcycle_idea,
                 previewUrl,
                 timestamp: Date.now(),
-                timeFormatted: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                timeFormatted: new Date().toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                }),
                 engineUsed: 'gemini',
               };
+            } else if (json.error && !json.requiresApiKey) {
+              setToastError(`Notice: ${json.error}`);
             }
+          } else {
+            console.warn('API returned non-200 status:', apiResponse.status);
           }
-        } catch {
+        } catch (fetchErr: any) {
           clearTimeout(timeoutId);
-          // Backend timed out or offline: automatically fall back to fast local engine
+          console.warn('Vision API call failed or timed out:', fetchErr.message);
         }
       }
     } catch (e) {
-      console.warn('Network call bypassed, using fast local engine:', e);
+      console.warn('Preprocessing error:', e);
     }
 
-    // 3. Fast on-device visual classifier (takes ~20ms!)
+    // 3. Fallback to local image analyzer only if network is offline / serverless unavailable
     if (!analyzedResult) {
       const img = new Image();
-      // Only set crossOrigin on external http URLs to avoid tainting or blocking blob/data URLs
       if (previewUrl.startsWith('http://') || previewUrl.startsWith('https://')) {
         img.crossOrigin = 'anonymous';
       }
@@ -358,7 +438,7 @@ export const Scanner: React.FC<ScannerProps> = ({
         img.onerror = resolve;
       });
 
-      analyzedResult = await analyzeImageLocally(img, previewUrl, fileName);
+      analyzedResult = await analyzeImageLocally(img, previewUrl);
     }
 
     return analyzedResult;
@@ -405,6 +485,7 @@ export const Scanner: React.FC<ScannerProps> = ({
           glass: 'Glass Waste',
           'e-waste': 'Electronic Waste',
           hazardous: 'Hazardous Waste',
+          unknown: 'Unidentified Material',
         };
         const updatedEco = ecoDecisionKnowledgeBase[newCategory];
         const isOrg = newCategory === 'organic';
@@ -599,6 +680,48 @@ export const Scanner: React.FC<ScannerProps> = ({
                 </button>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Missing API Key Guidance Banner for Netlify / Cloud Hosting */}
+        {apiKeyMissingError && (
+          <div className="mb-8 p-5 rounded-2xl bg-amber-50 border-2 border-amber-300 text-amber-950 shadow-sm space-y-3">
+            <div className="flex items-center justify-between font-bold text-amber-900">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0" />
+                <span className="text-sm sm:text-base">
+                  Action Required on Netlify / Cloud Hosting: Set GEMINI_API_KEY
+                </span>
+              </div>
+              <button
+                onClick={() => setApiKeyMissingError(null)}
+                className="p-1 hover:bg-amber-100 rounded-lg text-amber-800"
+                title="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+            <p className="text-xs sm:text-sm text-amber-900 leading-relaxed">
+              Your app is running on an external host (Netlify / Vercel), but the serverless AI Vision function cannot find the{' '}
+              <code className="bg-amber-200/90 px-1.5 py-0.5 rounded font-mono font-bold text-amber-950">
+                GEMINI_API_KEY
+              </code>{' '}
+              environment variable. Follow these quick steps to enable real AI vision:
+            </p>
+            <ol className="list-decimal list-inside text-xs sm:text-sm text-amber-900 font-medium space-y-1.5 pl-1 bg-amber-100/60 p-3 rounded-xl border border-amber-200">
+              <li>
+                Open your <strong>Netlify Dashboard</strong> &gt; Select your project (<code>ai-waste</code>).
+              </li>
+              <li>
+                Navigate to <strong>Site configuration</strong> &gt; <strong>Environment variables</strong>.
+              </li>
+              <li>
+                Click <strong>Add a variable</strong>, set Key to <code>GEMINI_API_KEY</code>, and paste your Google AI Studio API key as the Value.
+              </li>
+              <li>
+                Go to <strong>Deploys</strong> &gt; <strong>Trigger deploy</strong> &gt; <strong>Clear cache and deploy site</strong>.
+              </li>
+            </ol>
           </div>
         )}
 
@@ -928,79 +1051,120 @@ export const Scanner: React.FC<ScannerProps> = ({
                           ))}
                       </div>
 
-                      {/* Low confidence warning banner if < 55% */}
-                      {result.lowConfidence && (
-                        <div className="mb-4 p-3 rounded-xl bg-amber-100/70 border border-amber-300 text-amber-900 text-xs flex items-start gap-2.5">
-                          <AlertTriangle className="w-4 h-4 text-amber-700 flex-shrink-0 mt-0.5" />
-                          <div>
-                            <strong className="font-bold">Low Confidence Warning:</strong> Model
-                            confidence is under {LOW_CONFIDENCE_THRESHOLD}%. The item may be blurry,
-                            mixed-material, or outside standard dataset distributions. Verify with
-                            physical recycling codes on the container.
+                      {/* Unidentified / Unclear Image Banner */}
+                      {!result.isIdentifiable && (
+                        <div className="my-4 p-4 rounded-2xl bg-amber-50/80 border-2 border-amber-300 text-amber-950 space-y-3">
+                          <div className="flex items-center gap-2 font-bold text-amber-900">
+                            <AlertTriangle className="w-5 h-5 text-amber-700 flex-shrink-0" />
+                            <span className="text-sm">Item Could Not Be Identified Reliably</span>
+                          </div>
+                          <p className="text-xs text-amber-900 leading-relaxed">
+                            {result.unclearReason ||
+                              'The image does not clearly depict a recognized waste item (it may be blurry, cropped, dimly lit, or obstructed). Rather than guessing an incorrect material, our system flags this for review.'}
+                          </p>
+                          <div className="p-3 bg-white/90 rounded-xl border border-amber-200 text-xs space-y-1">
+                            <strong className="block text-amber-950 font-bold">Tips for an Accurate Scan:</strong>
+                            <ul className="list-disc list-inside text-amber-900 space-y-0.5">
+                              <li>Center the object in good ambient or room lighting.</li>
+                              <li>Avoid shadows, glare, or extremely high contrast.</li>
+                              <li>Remove outer wrapping or bags to reveal the primary material.</li>
+                              <li>If you know the material, select the quick correction buttons above.</li>
+                            </ul>
                           </div>
                         </div>
                       )}
 
-                      {/* Decomposition & CO2 Avoided Cards */}
-                      <div className="grid grid-cols-2 gap-2 my-4">
-                        <div className="p-3 rounded-xl bg-[#f4f7f2] border border-[#d5e3d8] flex items-center gap-2.5">
-                          <Clock className="w-4 h-4 text-[#3d8b5f] flex-shrink-0" />
+                      {/* SECTION 1: OBJECT & MATERIAL IDENTIFICATION */}
+                      <div className="my-4 p-4 rounded-2xl bg-[#fafcf8] border border-[#d5e3d8] space-y-3">
+                        <div className="flex items-center justify-between pb-2 border-b border-[#e8f0e4]">
+                          <span className="text-[10px] font-extrabold uppercase tracking-widest text-[#3d8b5f]">
+                            01 / Visual & Material Identification
+                          </span>
+                          <span className="text-[10px] font-semibold text-[#5f7366] px-2 py-0.5 rounded bg-[#e8f0e4]">
+                            Engine: {result.engineUsed === 'gemini' ? 'Gemini Vision AI' : 'Local Sensor'}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                           <div>
-                            <span className="text-[10px] font-bold uppercase tracking-wider text-[#5f7366]">
-                              Decomp. Time
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-[#5f7366] block">
+                              Detected Object
                             </span>
-                            <p className="text-xs font-bold text-[#163528]">
-                              {result.decompositionTime}
-                            </p>
+                            <span className="font-bold text-[#163528] text-sm">
+                              {result.itemName}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-[#5f7366] block">
+                              Material Composition
+                            </span>
+                            <span className="font-semibold text-[#163528]">
+                              {result.materialDetail}
+                            </span>
                           </div>
                         </div>
 
-                        <div className="p-3 rounded-xl bg-[#e3f2e7] border border-[#b8e0c2] flex items-center gap-2.5">
-                          <Leaf className="w-4 h-4 text-[#1f4d36] flex-shrink-0" />
-                          <div>
-                            <span className="text-[10px] font-bold uppercase tracking-wider text-[#1f4d36]">
-                              CO₂ Diverted
-                            </span>
-                            <p className="text-xs font-bold text-[#1f4d36]">
-                              ~{result.co2DivertedKg} kg avoided
-                            </p>
+                        {/* Decomposition & CO2 Avoided Cards */}
+                        <div className="grid grid-cols-2 gap-2 pt-1">
+                          <div className="p-2.5 rounded-xl bg-white border border-[#d5e3d8] flex items-center gap-2">
+                            <Clock className="w-4 h-4 text-[#3d8b5f] flex-shrink-0" />
+                            <div>
+                              <span className="text-[9px] font-bold uppercase tracking-wider text-[#5f7366] block">
+                                Decomp. Time
+                              </span>
+                              <p className="text-xs font-bold text-[#163528]">
+                                {result.decompositionTime}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="p-2.5 rounded-xl bg-[#e3f2e7] border border-[#b8e0c2] flex items-center gap-2">
+                            <Leaf className="w-4 h-4 text-[#1f4d36] flex-shrink-0" />
+                            <div>
+                              <span className="text-[9px] font-bold uppercase tracking-wider text-[#1f4d36] block">
+                                CO₂ Avoided
+                              </span>
+                              <p className="text-xs font-bold text-[#1f4d36]">
+                                ~{result.co2DivertedKg} kg avoided
+                              </p>
+                            </div>
                           </div>
                         </div>
+
+                        {/* Alternative Predictions */}
+                        {result.alternatives && result.alternatives.length > 0 && (
+                          <div className="pt-1">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-[#5f7366] block mb-1">
+                              Alternative class probabilities:
+                            </span>
+                            <div className="flex flex-wrap gap-1.5 text-[11px]">
+                              {result.alternatives.map((alt, aIdx) => (
+                                <span
+                                  key={aIdx}
+                                  className="px-2 py-0.5 rounded-md bg-white border border-[#d5e3d8] text-[#5f7366]"
+                                >
+                                  {alt.className}: {Math.round(alt.probability * 100)}%
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
 
-                      {/* Alternative Predictions */}
-                      {result.alternatives && result.alternatives.length > 0 && (
-                        <div className="mb-4">
-                          <span className="text-[11px] font-bold uppercase tracking-wider text-[#5f7366] block mb-1">
-                            Alternative class probabilities:
-                          </span>
-                          <div className="flex flex-wrap gap-2 text-xs">
-                            {result.alternatives.map((alt, aIdx) => (
-                              <span
-                                key={aIdx}
-                                className="px-2 py-0.5 rounded-md bg-[#f4f7f2] border border-[#d5e3d8] text-[#5f7366]"
-                              >
-                                {alt.className}: {Math.round(alt.probability * 100)}%
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* EcoDecision Guidance Section */}
+                      {/* SECTION 2: TAILORED RECYCLING & ECODECISION GUIDANCE */}
                       <div className="pt-3 border-t border-[#e8f0e4] space-y-4">
                         <div className="flex items-center justify-between">
                           <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#1f4d36] text-[#b8e0c2] text-xs font-bold">
                             <Sparkles className="w-3.5 h-3.5" />
-                            <span>EcoDecision Guidance</span>
+                            <span>02 / EcoDecision Disposal & Recycling Instructions</span>
                           </div>
                           <span className="text-[11px] text-[#5f7366] italic">
-                            Local kerbside regulations apply
+                            Tailored for {result.itemName}
                           </span>
                         </div>
 
                         {/* Disposal rules */}
-                        {result.ecoDecision?.disposal && (
+                        {result.ecoDecision?.disposal && result.ecoDecision.disposal.length > 0 && (
                           <div className="space-y-1">
                             <h5 className="font-bold text-xs uppercase tracking-wide text-[#163528] flex items-center gap-1.5">
                               <CheckCircle2 className="w-3.5 h-3.5 text-[#3d8b5f]" />
@@ -1015,7 +1179,7 @@ export const Scanner: React.FC<ScannerProps> = ({
                         )}
 
                         {/* Preparation steps */}
-                        {result.ecoDecision?.preparation && (
+                        {result.ecoDecision?.preparation && result.ecoDecision.preparation.length > 0 && (
                           <div className="space-y-1">
                             <h5 className="font-bold text-xs uppercase tracking-wide text-[#163528] flex items-center gap-1.5">
                               <RefreshCw className="w-3.5 h-3.5 text-[#3d8b5f]" />
@@ -1030,7 +1194,7 @@ export const Scanner: React.FC<ScannerProps> = ({
                         )}
 
                         {/* Reuse & Upcycling */}
-                        {result.ecoDecision?.reuse && (
+                        {result.ecoDecision?.reuse && result.ecoDecision.reuse.length > 0 && (
                           <div className="space-y-1">
                             <h5 className="font-bold text-xs uppercase tracking-wide text-[#163528] flex items-center gap-1.5">
                               <Lightbulb className="w-3.5 h-3.5 text-amber-600" />
@@ -1063,16 +1227,18 @@ export const Scanner: React.FC<ScannerProps> = ({
                         )}
 
                         {/* Interactive Upcycling Plan CTA */}
-                        <div className="pt-2 flex justify-end">
-                          <button
-                            type="button"
-                            onClick={() => requestUpcycleProjects(result.itemName, result.category)}
-                            className="inline-flex items-center gap-1.5 text-xs font-bold text-[#1f4d36] hover:text-[#3d8b5f] bg-[#e3f2e7] hover:bg-[#b8e0c2] px-3 py-1.5 rounded-lg transition-colors border border-[#b8e0c2]"
-                          >
-                            <Lightbulb className="w-3.5 h-3.5" />
-                            <span>Generate Step-by-Step DIY Upcycle Ideas</span>
-                          </button>
-                        </div>
+                        {result.isIdentifiable && (
+                          <div className="pt-2 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => requestUpcycleProjects(result.itemName, result.category)}
+                              className="inline-flex items-center gap-1.5 text-xs font-bold text-[#1f4d36] hover:text-[#3d8b5f] bg-[#e3f2e7] hover:bg-[#b8e0c2] px-3 py-1.5 rounded-lg transition-colors border border-[#b8e0c2]"
+                            >
+                              <Lightbulb className="w-3.5 h-3.5" />
+                              <span>Generate Step-by-Step DIY Upcycle Ideas</span>
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </article>
                   );
